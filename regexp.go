@@ -13,7 +13,45 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
+
+var (
+	regexCaches = map[string]*regexp.Regexp{}
+	cacheLocker = sync.RWMutex{}
+)
+
+func init() {
+	go func() {
+		for {
+			time.Sleep(time.Minute * 10)
+			cacheLocker.Lock()
+			for k := range regexCaches {
+				delete(regexCaches, k)
+			}
+			cacheLocker.Unlock()
+		}
+	}()
+}
+
+func buildRegexp(pattern string) (*regexp.Regexp, error) {
+	cacheLocker.RLock()
+	if r, ok := regexCaches[pattern]; ok {
+		cacheLocker.RUnlock()
+		return r, nil
+	}
+	cacheLocker.RUnlock()
+
+	cacheLocker.Lock()
+	defer cacheLocker.Unlock()
+	r, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	regexCaches[pattern] = r
+	return r, nil
+}
 
 // newRouteRegexp parses a route template and returns a routeRegexp,
 // used to match a host, a path or a query string.
@@ -87,7 +125,7 @@ func newRouteRegexp(tpl string, matchHost, matchPrefix, matchQuery, strictSlash,
 
 		// Append variable name and compiled pattern.
 		varsN[i/2] = name
-		varsR[i/2], err = regexp.Compile(fmt.Sprintf("^%s$", patt))
+		varsR[i/2], err = buildRegexp(fmt.Sprintf("^%s$", patt))
 		if err != nil {
 			return nil, err
 		}
@@ -112,7 +150,7 @@ func newRouteRegexp(tpl string, matchHost, matchPrefix, matchQuery, strictSlash,
 		reverse.WriteByte('/')
 	}
 	// Compile full regexp.
-	reg, errCompile := regexp.Compile(pattern.String())
+	reg, errCompile := buildRegexp(pattern.String())
 	if errCompile != nil {
 		return nil, errCompile
 	}
